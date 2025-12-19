@@ -29,7 +29,8 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
-  foldLevel: "fold-all"
+  foldLevel: "fold-all",
+  delay: 500
 };
 var AutoFoldPlugin = class extends import_obsidian.Plugin {
   async onload() {
@@ -50,7 +51,7 @@ var AutoFoldPlugin = class extends import_obsidian.Plugin {
                 console.error("Auto Fold: Error executing fold command", error);
               }
             }
-          }, 500);
+          }, this.settings.delay);
         }
       })
     );
@@ -76,6 +77,10 @@ var AutoFoldSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h2", { text: "Auto Fold Settings" });
     new import_obsidian.Setting(containerEl).setName("Fold Level").setDesc("Select which level of headings to fold when opening a file.").addDropdown((dropdown) => dropdown.addOption("fold-all", "Fold All").addOption("1", "Level 1 (H1)").addOption("2", "Level 2 (H2)").addOption("3", "Level 3 (H3)").addOption("4", "Level 4 (H4)").addOption("5", "Level 5 (H5)").addOption("6", "Level 6 (H6)").setValue(this.plugin.settings.foldLevel).onChange(async (value) => {
       this.plugin.settings.foldLevel = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Delay (ms)").setDesc("Delay before folding (in milliseconds). Increase this if folding is inconsistent.").addSlider((slider) => slider.setLimits(0, 2e3, 50).setValue(this.plugin.settings.delay).setDynamicTooltip().onChange(async (value) => {
+      this.plugin.settings.delay = value;
       await this.plugin.saveSettings();
     }));
   }

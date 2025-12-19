@@ -2,10 +2,12 @@ import { Plugin, MarkdownView, App, PluginSettingTab, Setting } from 'obsidian';
 
 interface AutoFoldSettings {
     foldLevel: string;
+    delay: number;
 }
 
 const DEFAULT_SETTINGS: AutoFoldSettings = {
-    foldLevel: 'fold-all'
+    foldLevel: 'fold-all',
+    delay: 500
 }
 
 export default class AutoFoldPlugin extends Plugin {
@@ -34,7 +36,7 @@ export default class AutoFoldPlugin extends Plugin {
                                 console.error("Auto Fold: Error executing fold command", error);
                             }
                         }
-                    }, 500); // 500ms delay
+                    }, this.settings.delay);
                 }
             })
         );
@@ -84,6 +86,18 @@ class AutoFoldSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.foldLevel)
                 .onChange(async (value) => {
                     this.plugin.settings.foldLevel = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Delay (ms)')
+            .setDesc('Delay before folding (in milliseconds). Increase this if folding is inconsistent.')
+            .addSlider(slider => slider
+                .setLimits(0, 2000, 50)
+                .setValue(this.plugin.settings.delay)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.delay = value;
                     await this.plugin.saveSettings();
                 }));
     }
