@@ -35,27 +35,54 @@ var DEFAULT_SETTINGS = {
 var AutoFoldPlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
+    this.addCommand({
+      id: "auto-fold-current-file",
+      name: "Fold current file",
+      callback: () => {
+        this.foldCurrentFile();
+      }
+    });
+    this.addCommand({
+      id: "auto-fold-all",
+      name: "Fold all",
+      callback: () => {
+        this.foldCurrentFile("fold-all");
+      }
+    });
+    for (let i = 1; i <= 6; i++) {
+      this.addCommand({
+        id: `auto-fold-level-${i}`,
+        name: `Fold level ${i}`,
+        callback: () => {
+          this.foldCurrentFile(String(i));
+        }
+      });
+    }
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (file) {
           setTimeout(() => {
-            const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-            if (view) {
-              try {
-                let commandId = "editor:fold-all";
-                if (this.settings.foldLevel !== "fold-all") {
-                  commandId = `editor:fold-level-${this.settings.foldLevel}`;
-                }
-                this.app.commands.executeCommandById(commandId);
-              } catch (error) {
-                console.error("Auto Fold: Error executing fold command", error);
-              }
-            }
+            this.foldCurrentFile();
           }, this.settings.delay);
         }
       })
     );
     this.addSettingTab(new AutoFoldSettingTab(this.app, this));
+  }
+  foldCurrentFile(targetLevel) {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (view) {
+      try {
+        const levelToUse = targetLevel || this.settings.foldLevel;
+        let commandId = "editor:fold-all";
+        if (levelToUse !== "fold-all") {
+          commandId = `editor:fold-level-${levelToUse}`;
+        }
+        this.app.commands.executeCommandById(commandId);
+      } catch (error) {
+        console.error("Auto Fold: Error executing fold command", error);
+      }
+    }
   }
   onunload() {
   }

@@ -16,32 +16,65 @@ export default class AutoFoldPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
+        this.addCommand({
+            id: 'auto-fold-current-file',
+            name: 'Fold current file',
+            callback: () => {
+                this.foldCurrentFile();
+            }
+        });
+
+        this.addCommand({
+            id: 'auto-fold-all',
+            name: 'Fold all',
+            callback: () => {
+                this.foldCurrentFile('fold-all');
+            }
+        });
+
+        // Add commands for specific fold levels
+        for (let i = 1; i <= 6; i++) {
+            this.addCommand({
+                id: `auto-fold-level-${i}`,
+                name: `Fold level ${i}`,
+                callback: () => {
+                    this.foldCurrentFile(String(i));
+                }
+            });
+        }
+
         this.registerEvent(
             this.app.workspace.on('file-open', (file) => {
                 if (file) {
                     // We add a delay to ensure the file is fully loaded and the editor is ready
                     setTimeout(() => {
-                        // Check if the current view is a Markdown view
-                        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                        if (view) {
-                            // Execute the command based on settings
-                            try {
-                                let commandId = 'editor:fold-all';
-                                if (this.settings.foldLevel !== 'fold-all') {
-                                    commandId = `editor:fold-level-${this.settings.foldLevel}`;
-                                }
-                                // @ts-ignore - access internal commands
-                                this.app.commands.executeCommandById(commandId);
-                            } catch (error) {
-                                console.error("Auto Fold: Error executing fold command", error);
-                            }
-                        }
+                        this.foldCurrentFile();
                     }, this.settings.delay);
                 }
             })
         );
 
         this.addSettingTab(new AutoFoldSettingTab(this.app, this));
+    }
+
+    foldCurrentFile(targetLevel?: string) {
+        // Check if the current view is a Markdown view
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (view) {
+            // Execute the command based on settings or provided target level
+            try {
+                const levelToUse = targetLevel || this.settings.foldLevel;
+
+                let commandId = 'editor:fold-all';
+                if (levelToUse !== 'fold-all') {
+                    commandId = `editor:fold-level-${levelToUse}`;
+                }
+                // @ts-ignore - access internal commands
+                this.app.commands.executeCommandById(commandId);
+            } catch (error) {
+                console.error("Auto Fold: Error executing fold command", error);
+            }
+        }
     }
 
     onunload() {
