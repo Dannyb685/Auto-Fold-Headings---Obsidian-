@@ -1,4 +1,6 @@
 import { Plugin, MarkdownView, App, PluginSettingTab, Setting } from 'obsidian';
+import { EditorView } from '@codemirror/view';
+import { foldEffect, unfoldEffect, foldable, foldedRanges } from '@codemirror/language';
 
 interface AutoFoldSettings {
     foldLevel: string;
@@ -20,7 +22,7 @@ export default class AutoFoldPlugin extends Plugin {
             id: 'auto-fold-current-file',
             name: 'Fold current file',
             callback: () => {
-                this.foldCurrentFile();
+                this.applyFoldLevel(this.settings.foldLevel);
             }
         });
 
@@ -28,17 +30,18 @@ export default class AutoFoldPlugin extends Plugin {
             id: 'auto-fold-all',
             name: 'Fold all',
             callback: () => {
-                this.foldCurrentFile('fold-all');
+                // @ts-ignore
+                this.app.commands.executeCommandById('editor:fold-all');
             }
         });
 
-        // Add commands for specific fold levels
         for (let i = 1; i <= 6; i++) {
+            const level = i;
             this.addCommand({
-                id: `auto-fold-level-${i}`,
-                name: `Fold level ${i}`,
+                id: `auto-fold-level-${level}`,
+                name: `Toggle fold H${level}`,
                 callback: () => {
-                    this.foldCurrentFile(String(i));
+                    this.toggleFoldAtLevel(level);
                 }
             });
         }
@@ -46,9 +49,8 @@ export default class AutoFoldPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('file-open', (file) => {
                 if (file) {
-                    // We add a delay to ensure the file is fully loaded and the editor is ready
                     setTimeout(() => {
-                        this.foldCurrentFile();
+                        this.applyFoldLevel(this.settings.foldLevel);
                     }, this.settings.delay);
                 }
             })
@@ -57,24 +59,77 @@ export default class AutoFoldPlugin extends Plugin {
         this.addSettingTab(new AutoFoldSettingTab(this.app, this));
     }
 
-    foldCurrentFile(targetLevel?: string) {
-        // Check if the current view is a Markdown view
+    private getCmEditor(): EditorView | null {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (view) {
-            // Execute the command based on settings or provided target level
-            try {
-                const levelToUse = targetLevel || this.settings.foldLevel;
+        if (!view) return null;
+        // @ts-ignore - access internal CM6 editor
+        return (view.editor as any).cm as EditorView ?? null;
+    }
 
-                let commandId = 'editor:fold-all';
-                if (levelToUse !== 'fold-all') {
-                    commandId = `editor:fold-level-${levelToUse}`;
-                }
-                // @ts-ignore - access internal commands
-                this.app.commands.executeCommandById(commandId);
-            } catch (error) {
-                console.error("Auto Fold: Error executing fold command", error);
+    toggleFoldAtLevel(targetLevel: number) {
+        const cm = this.getCmEditor();
+        if (!cm) return;
+
+        const state = cm.state;
+        const doc = state.doc;
+        const folded = foldedRanges(state);
+
+        const foldableItems: { range: { from: number; to: number } }[] = [];
+
+        for (let i = 1; i <= doc.lines; i++) {
+            const line = doc.line(i);
+            const match = line.text.match(/^(#{1,6})\s/);
+            if (match && match[1].length === targetLevel) {
+                const range = foldable(state, line.from, line.to);
+                if (range) foldableItems.push({ range });
             }
         }
+
+        if (foldableItems.length === 0) return;
+
+        // If ALL headings at this level are folded → unfold; otherwise → fold
+        const allFolded = foldableItems.every(({ range }) => {
+            let found = false;
+            folded.between(range.from, range.from + 1, (rFrom) => {
+                if (rFrom === range.from) { found = true; return false; }
+            });
+            return found;
+        });
+
+        const effects = foldableItems.map(({ range }) =>
+            allFolded ? unfoldEffect.of(range) : foldEffect.of(range)
+        );
+
+        cm.dispatch({ effects });
+    }
+
+    applyFoldLevel(level: string) {
+        if (level === 'fold-all') {
+            // @ts-ignore
+            this.app.commands.executeCommandById('editor:fold-all');
+            return;
+        }
+
+        const targetLevel = parseInt(level);
+        if (isNaN(targetLevel)) return;
+
+        const cm = this.getCmEditor();
+        if (!cm) return;
+
+        const state = cm.state;
+        const doc = state.doc;
+        const effects = [];
+
+        for (let i = 1; i <= doc.lines; i++) {
+            const line = doc.line(i);
+            const match = line.text.match(/^(#{1,6})\s/);
+            if (match && match[1].length === targetLevel) {
+                const range = foldable(state, line.from, line.to);
+                if (range) effects.push(foldEffect.of(range));
+            }
+        }
+
+        if (effects.length > 0) cm.dispatch({ effects });
     }
 
     onunload() {

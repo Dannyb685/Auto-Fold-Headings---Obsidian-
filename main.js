@@ -28,6 +28,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
+var import_language = require("@codemirror/language");
 var DEFAULT_SETTINGS = {
   foldLevel: "fold-all",
   delay: 500
@@ -39,22 +40,23 @@ var AutoFoldPlugin = class extends import_obsidian.Plugin {
       id: "auto-fold-current-file",
       name: "Fold current file",
       callback: () => {
-        this.foldCurrentFile();
+        this.applyFoldLevel(this.settings.foldLevel);
       }
     });
     this.addCommand({
       id: "auto-fold-all",
       name: "Fold all",
       callback: () => {
-        this.foldCurrentFile("fold-all");
+        this.app.commands.executeCommandById("editor:fold-all");
       }
     });
     for (let i = 1; i <= 6; i++) {
+      const level = i;
       this.addCommand({
-        id: `auto-fold-level-${i}`,
-        name: `Fold level ${i}`,
+        id: `auto-fold-level-${level}`,
+        name: `Toggle fold H${level}`,
         callback: () => {
-          this.foldCurrentFile(String(i));
+          this.toggleFoldAtLevel(level);
         }
       });
     }
@@ -62,27 +64,79 @@ var AutoFoldPlugin = class extends import_obsidian.Plugin {
       this.app.workspace.on("file-open", (file) => {
         if (file) {
           setTimeout(() => {
-            this.foldCurrentFile();
+            this.applyFoldLevel(this.settings.foldLevel);
           }, this.settings.delay);
         }
       })
     );
     this.addSettingTab(new AutoFoldSettingTab(this.app, this));
   }
-  foldCurrentFile(targetLevel) {
+  getCmEditor() {
+    var _a;
     const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-    if (view) {
-      try {
-        const levelToUse = targetLevel || this.settings.foldLevel;
-        let commandId = "editor:fold-all";
-        if (levelToUse !== "fold-all") {
-          commandId = `editor:fold-level-${levelToUse}`;
-        }
-        this.app.commands.executeCommandById(commandId);
-      } catch (error) {
-        console.error("Auto Fold: Error executing fold command", error);
+    if (!view)
+      return null;
+    return (_a = view.editor.cm) != null ? _a : null;
+  }
+  toggleFoldAtLevel(targetLevel) {
+    const cm = this.getCmEditor();
+    if (!cm)
+      return;
+    const state = cm.state;
+    const doc = state.doc;
+    const folded = (0, import_language.foldedRanges)(state);
+    const foldableItems = [];
+    for (let i = 1; i <= doc.lines; i++) {
+      const line = doc.line(i);
+      const match = line.text.match(/^(#{1,6})\s/);
+      if (match && match[1].length === targetLevel) {
+        const range = (0, import_language.foldable)(state, line.from, line.to);
+        if (range)
+          foldableItems.push({ range });
       }
     }
+    if (foldableItems.length === 0)
+      return;
+    const allFolded = foldableItems.every(({ range }) => {
+      let found = false;
+      folded.between(range.from, range.from + 1, (rFrom) => {
+        if (rFrom === range.from) {
+          found = true;
+          return false;
+        }
+      });
+      return found;
+    });
+    const effects = foldableItems.map(
+      ({ range }) => allFolded ? import_language.unfoldEffect.of(range) : import_language.foldEffect.of(range)
+    );
+    cm.dispatch({ effects });
+  }
+  applyFoldLevel(level) {
+    if (level === "fold-all") {
+      this.app.commands.executeCommandById("editor:fold-all");
+      return;
+    }
+    const targetLevel = parseInt(level);
+    if (isNaN(targetLevel))
+      return;
+    const cm = this.getCmEditor();
+    if (!cm)
+      return;
+    const state = cm.state;
+    const doc = state.doc;
+    const effects = [];
+    for (let i = 1; i <= doc.lines; i++) {
+      const line = doc.line(i);
+      const match = line.text.match(/^(#{1,6})\s/);
+      if (match && match[1].length === targetLevel) {
+        const range = (0, import_language.foldable)(state, line.from, line.to);
+        if (range)
+          effects.push(import_language.foldEffect.of(range));
+      }
+    }
+    if (effects.length > 0)
+      cm.dispatch({ effects });
   }
   onunload() {
   }
