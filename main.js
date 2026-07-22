@@ -24,124 +24,203 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => AutoFoldPlugin
+  default: () => AutoFoldPlugin,
+  migrateSettings: () => migrateSettings
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_language = require("@codemirror/language");
-var DEFAULT_SETTINGS = {
-  foldLevel: "fold-all",
-  delay: 500
-};
+var MIN_DELAY = 150;
+function migrateSettings(raw) {
+  const data = raw != null ? raw : {};
+  const legacyLevel = data.foldLevel === void 0 ? "all" : data.foldLevel === "fold-all" ? "all" : /^[1-6]$/.test(data.foldLevel) ? data.foldLevel : "all";
+  const mode = (current, fallback) => {
+    const m = current != null ? current : {};
+    return {
+      enabled: typeof m.enabled === "boolean" ? m.enabled : fallback.enabled,
+      level: typeof m.level === "string" && /^(all|[1-6])$/.test(m.level) ? m.level : fallback.level
+    };
+  };
+  const inherited = { enabled: true, level: legacyLevel };
+  return {
+    editing: mode(data.editing, inherited),
+    reading: mode(data.reading, inherited),
+    // The build that has actually been running used 150ms. An older saved
+    // value of 100 would give the renderer less time than it needs.
+    delay: Math.max(MIN_DELAY, typeof data.delay === "number" ? data.delay : MIN_DELAY)
+  };
+}
 var AutoFoldPlugin = class extends import_obsidian.Plugin {
+  constructor() {
+    super(...arguments);
+    /** One shared timer, so a burst of file-opens folds once. */
+    this.foldTimer = null;
+    /** One shared retry handle, so retries cannot pile up. */
+    this.retryTimer = null;
+  }
   async onload() {
     await this.loadSettings();
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file)
+          this.scheduleAutoFold();
+      })
+    );
     this.addCommand({
       id: "auto-fold-current-file",
       name: "Fold current file",
-      callback: () => {
-        this.applyFoldLevel(this.settings.foldLevel);
-      }
+      callback: () => this.foldActiveView()
     });
-    this.addCommand({
-      id: "auto-fold-all",
-      name: "Fold all",
-      callback: () => {
-        this.app.commands.executeCommandById("editor:fold-all");
-      }
-    });
-    for (let i = 1; i <= 6; i++) {
-      const level = i;
+    for (let level = 1; level <= 6; level++) {
       this.addCommand({
         id: `auto-fold-level-${level}`,
         name: `Toggle fold H${level}`,
-        callback: () => {
-          this.toggleFoldAtLevel(level);
-        }
+        callback: () => this.toggleFoldAtLevel(level)
       });
     }
-    this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
-        if (file) {
-          setTimeout(() => {
-            this.applyFoldLevel(this.settings.foldLevel);
-          }, this.settings.delay);
-        }
-      })
-    );
     this.addSettingTab(new AutoFoldSettingTab(this.app, this));
   }
-  getCmEditor() {
-    var _a;
+  onunload() {
+    this.clearTimers();
+  }
+  clearTimers() {
+    var _a, _b;
+    window.clearTimeout((_a = this.foldTimer) != null ? _a : void 0);
+    window.clearTimeout((_b = this.retryTimer) != null ? _b : void 0);
+    this.foldTimer = null;
+    this.retryTimer = null;
+  }
+  scheduleAutoFold() {
+    this.clearTimers();
+    this.foldTimer = window.setTimeout(() => this.foldActiveView(), this.settings.delay);
+  }
+  /** Fold the active note using whichever mode it is currently showing. */
+  foldActiveView() {
     const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
     if (!view)
-      return null;
-    return (_a = view.editor.cm) != null ? _a : null;
-  }
-  toggleFoldAtLevel(targetLevel) {
-    const cm = this.getCmEditor();
-    if (!cm)
       return;
-    const state = cm.state;
-    const doc = state.doc;
-    const folded = (0, import_language.foldedRanges)(state);
-    const foldableItems = [];
-    for (let i = 1; i <= doc.lines; i++) {
-      const line = doc.line(i);
-      const match = line.text.match(/^(#{1,6})\s/);
-      if (match && match[1].length === targetLevel) {
-        const range = (0, import_language.foldable)(state, line.from, line.to);
-        if (range)
-          foldableItems.push({ range });
+    const reading = view.getMode() === "preview";
+    const mode = reading ? this.settings.reading : this.settings.editing;
+    if (!mode.enabled)
+      return;
+    const minLevel = mode.level === "all" ? 1 : parseInt(mode.level, 10);
+    if (reading)
+      this.foldReading(view, minLevel, 12);
+    else
+      this.foldEditing(view, minLevel);
+  }
+  // #region -> reading mode
+  /**
+   * Collapse preview sections at `minLevel` and deeper.
+   *
+   * Retries while a render is in flight: Obsidian queues its own
+   * applyFoldInfo through onRendered, and anything folded before that
+   * drains gets overwritten. A pane that is not visible never renders, so
+   * the retry count is bounded rather than open-ended.
+   */
+  foldReading(view, minLevel, triesLeft) {
+    var _a, _b;
+    const renderer = (_a = view.previewMode) == null ? void 0 : _a.renderer;
+    const ready = !!renderer && renderer.rendered === null && Array.isArray(renderer.sections) && renderer.sections.length > 0;
+    if (!ready) {
+      if (triesLeft <= 0)
+        return;
+      window.clearTimeout((_b = this.retryTimer) != null ? _b : void 0);
+      this.retryTimer = window.setTimeout(
+        () => this.foldReading(view, minLevel, triesLeft - 1),
+        50
+      );
+      return;
+    }
+    let collapsedAny = false;
+    for (const section of renderer.sections) {
+      if (section.level >= minLevel && section.level <= 6 && !section.headingCollapsed) {
+        section.setCollapsed(true);
+        collapsedAny = true;
       }
     }
-    if (foldableItems.length === 0)
+    if (!collapsedAny)
       return;
-    const allFolded = foldableItems.every(({ range }) => {
-      let found = false;
-      folded.between(range.from, range.from + 1, (rFrom) => {
-        if (rFrom === range.from) {
-          found = true;
-          return false;
-        }
-      });
-      return found;
-    });
-    const effects = foldableItems.map(
-      ({ range }) => allFolded ? import_language.unfoldEffect.of(range) : import_language.foldEffect.of(range)
-    );
-    cm.dispatch({ effects });
+    renderer.updateShownSections();
+    renderer.updateVirtualDisplay();
   }
-  applyFoldLevel(level) {
-    if (level === "fold-all") {
-      this.app.commands.executeCommandById("editor:fold-all");
-      return;
-    }
-    const targetLevel = parseInt(level);
-    if (isNaN(targetLevel))
-      return;
-    const cm = this.getCmEditor();
+  // #region -> editing mode
+  /**
+   * Fold headings at `minLevel` and deeper in the editor.
+   *
+   * Additive on purpose. Clearing existing folds first would also wipe
+   * folded lists and frontmatter, which share the same fold set.
+   */
+  foldEditing(view, minLevel) {
+    const cm = this.getCmEditor(view);
     if (!cm)
       return;
-    const state = cm.state;
-    const doc = state.doc;
+    const { state } = cm;
+    const alreadyFolded = (0, import_language.foldedRanges)(state);
     const effects = [];
-    for (let i = 1; i <= doc.lines; i++) {
-      const line = doc.line(i);
+    for (let i = 1; i <= state.doc.lines; i++) {
+      const line = state.doc.line(i);
       const match = line.text.match(/^(#{1,6})\s/);
-      if (match && match[1].length === targetLevel) {
-        const range = (0, import_language.foldable)(state, line.from, line.to);
-        if (range)
-          effects.push(import_language.foldEffect.of(range));
+      if (!match || match[1].length < minLevel)
+        continue;
+      const range = (0, import_language.foldable)(state, line.from, line.to);
+      if (range && !this.isFolded(alreadyFolded, range.from)) {
+        effects.push(import_language.foldEffect.of(range));
       }
     }
     if (effects.length > 0)
       cm.dispatch({ effects });
   }
-  onunload() {
+  // #region -> shared
+  getCmEditor(view) {
+    var _a;
+    return (_a = view.editor.cm) != null ? _a : null;
+  }
+  isFolded(folded, from) {
+    let found = false;
+    folded.between(from, from + 1, (rangeFrom) => {
+      if (rangeFrom === from) {
+        found = true;
+        return false;
+      }
+    });
+    return found;
+  }
+  /**
+   * Manual command: fold every heading at exactly `targetLevel`, or unfold
+   * them if they are all already folded. Editing mode only, since it works
+   * on CodeMirror ranges.
+   */
+  toggleFoldAtLevel(targetLevel) {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (!view || view.getMode() === "preview")
+      return;
+    const cm = this.getCmEditor(view);
+    if (!cm)
+      return;
+    const { state } = cm;
+    const folded = (0, import_language.foldedRanges)(state);
+    const ranges = [];
+    for (let i = 1; i <= state.doc.lines; i++) {
+      const line = state.doc.line(i);
+      const match = line.text.match(/^(#{1,6})\s/);
+      if (match && match[1].length === targetLevel) {
+        const range = (0, import_language.foldable)(state, line.from, line.to);
+        if (range)
+          ranges.push(range);
+      }
+    }
+    if (ranges.length === 0)
+      return;
+    const allFolded = ranges.every((range) => this.isFolded(folded, range.from));
+    cm.dispatch({
+      effects: ranges.map(
+        (range) => allFolded ? import_language.unfoldEffect.of(range) : import_language.foldEffect.of(range)
+      )
+    });
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = migrateSettings(await this.loadData());
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -155,14 +234,33 @@ var AutoFoldSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Auto Fold Settings" });
-    new import_obsidian.Setting(containerEl).setName("Fold Level").setDesc("Select which level of headings to fold when opening a file.").addDropdown((dropdown) => dropdown.addOption("fold-all", "Fold All").addOption("1", "Level 1 (H1)").addOption("2", "Level 2 (H2)").addOption("3", "Level 3 (H3)").addOption("4", "Level 4 (H4)").addOption("5", "Level 5 (H5)").addOption("6", "Level 6 (H6)").setValue(this.plugin.settings.foldLevel).onChange(async (value) => {
-      this.plugin.settings.foldLevel = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(containerEl).setName("Delay (ms)").setDesc("Delay before folding (in milliseconds). Increase this if folding is inconsistent.").addSlider((slider) => slider.setLimits(0, 2e3, 50).setValue(this.plugin.settings.delay).setDynamicTooltip().onChange(async (value) => {
-      this.plugin.settings.delay = value;
-      await this.plugin.saveSettings();
-    }));
+    this.addModeSection("Editing mode", "editing");
+    this.addModeSection("Reading mode", "reading");
+    new import_obsidian.Setting(containerEl).setName("Timing").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Delay").setDesc(
+      `How long to wait after a note opens before folding, in milliseconds. Increase this if folding is inconsistent. Minimum ${MIN_DELAY}.`
+    ).addSlider(
+      (slider) => slider.setLimits(MIN_DELAY, 2e3, 50).setValue(this.plugin.settings.delay).setDynamicTooltip().onChange(async (value) => {
+        this.plugin.settings.delay = value;
+        await this.plugin.saveSettings();
+      })
+    );
+  }
+  addModeSection(title, key) {
+    const { containerEl } = this;
+    const mode = this.plugin.settings[key];
+    new import_obsidian.Setting(containerEl).setName(title).setHeading();
+    new import_obsidian.Setting(containerEl).setName("Fold on open").setDesc(`Fold headings when a note opens in ${title.toLowerCase()}.`).addToggle(
+      (toggle) => toggle.setValue(mode.enabled).onChange(async (value) => {
+        mode.enabled = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Heading level").setDesc("Headings at this level and deeper get collapsed.").addDropdown(
+      (dropdown) => dropdown.addOption("all", "All headings").addOption("1", "H1 and deeper").addOption("2", "H2 and deeper").addOption("3", "H3 and deeper").addOption("4", "H4 and deeper").addOption("5", "H5 and deeper").addOption("6", "H6 only").setValue(mode.level).onChange(async (value) => {
+        mode.level = value;
+        await this.plugin.saveSettings();
+      })
+    );
   }
 };

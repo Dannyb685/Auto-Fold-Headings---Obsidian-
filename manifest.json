@@ -1,10 +1,10 @@
 {
 	"id": "obsidian-auto-fold",
 	"name": "Auto Fold",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"minAppVersion": "0.15.0",
-	"description": "Automatically folds all headings when a file is opened.",
+	"description": "Automatically folds headings when a note is opened, configurable per mode.",
 	"author": "Dan Bergholz",
-	"authorUrl": "https://github.com/danielbergholz/Auto-Fold-Headings---Obsidian-",
+	"authorUrl": "https://github.com/Dannyb685/obsidian-auto-fold-headings",
 	"isDesktopOnly": false
 }
